@@ -10,7 +10,7 @@ import {
   projects,
   tasks,
   subtasks,
-       // <-- corrected
+  // <-- corrected
   type Organisation,
   type InsertOrganisation,
   type Employee,
@@ -458,62 +458,78 @@ export class DatabaseStorage implements IStorage {
   }
 
   async seedManagers(): Promise<void> {
-    const existingManagers = await this.getManagers();
-    if (existingManagers.length > 0) return;
+    try {
+      console.log("🌱 Seeding managers...");
+      const existingManagers = await this.getManagers();
+      if (existingManagers.length > 0) {
+        console.log("✅ Managers already seeded.");
+        return;
+      }
 
-    const managerList = [
-      { name: "Vikram Sen", employeeCode: "MGR003", email: "vikram@ctint.in", department: "Sales" },
-      { name: "Neha Thomas", employeeCode: "MGR004", email: "neha@ctint.in", department: "Marketing" },
-      { name: "Kiran Dev", employeeCode: "MGR005", email: "kiran@ctint.in", department: "Finance" },
-      { name: "Priya Sharma", employeeCode: "MGR006", email: "priya@ctint.in", department: "Operations" },
-      { name: "Rahul Gupta", employeeCode: "MGR007", email: "rahul@ctint.in", department: "IT" },
-      { name: "Ananya Patel", employeeCode: "MGR008", email: "ananya@ctint.in", department: "Admin" },
-      { name: "Arjun Reddy", employeeCode: "MGR009", email: "arjun@ctint.in", department: "Legal" },
-      { name: "Meera Nair", employeeCode: "MGR010", email: "meera@ctint.in", department: "Quality" },
-      { name: "Sanjay Kumar", employeeCode: "MGR011", email: "sanjay@ctint.in", department: "Support" },
-      { name: "Ritu Singh", employeeCode: "MGR012", email: "ritu@ctint.in", department: "Design" },
-      { name: "Deepak Joshi", employeeCode: "MGR013", email: "deepak@ctint.in", department: "Research" },
-      { name: "Kavitha Menon", employeeCode: "MGR014", email: "kavitha@ctint.in", department: "Training" },
-      { name: "Suresh Iyer", employeeCode: "MGR015", email: "suresh@ctint.in", department: "Procurement" },
-    ];
+      const managerList = [
+        { name: "Vikram Sen", employeeCode: "MGR003", email: "vikram@ctint.in", department: "Sales" },
+        { name: "Neha Thomas", employeeCode: "MGR004", email: "neha@ctint.in", department: "Marketing" },
+        { name: "Kiran Dev", employeeCode: "MGR005", email: "kiran@ctint.in", department: "Finance" },
+        { name: "Priya Sharma", employeeCode: "MGR006", email: "priya@ctint.in", department: "Operations" },
+        { name: "Rahul Gupta", employeeCode: "MGR007", email: "rahul@ctint.in", department: "IT" },
+        { name: "Ananya Patel", employeeCode: "MGR008", email: "ananya@ctint.in", department: "Admin" },
+        { name: "Arjun Reddy", employeeCode: "MGR009", email: "arjun@ctint.in", department: "Legal" },
+        { name: "Meera Nair", employeeCode: "MGR010", email: "meera@ctint.in", department: "Quality" },
+        { name: "Sanjay Kumar", employeeCode: "MGR011", email: "sanjay@ctint.in", department: "Support" },
+        { name: "Ritu Singh", employeeCode: "MGR012", email: "ritu@ctint.in", department: "Design" },
+        { name: "Deepak Joshi", employeeCode: "MGR013", email: "deepak@ctint.in", department: "Research" },
+        { name: "Kavitha Menon", employeeCode: "MGR014", email: "kavitha@ctint.in", department: "Training" },
+        { name: "Suresh Iyer", employeeCode: "MGR015", email: "suresh@ctint.in", department: "Procurement" },
+      ];
 
-    for (const manager of managerList) {
-      await this.createManager(manager);
+      for (const manager of managerList) {
+        await this.createManager(manager);
+      }
+      console.log("✅ Managers seeded successfully.");
+    } catch (error) {
+      console.error("❌ Error seeding managers:", error);
+      // We don't rethrow here to allow server startup to continue even if seeding fails
     }
   }
 
   async seedDefaultEmployees(): Promise<void> {
-    const defaultEmployees = [
-      { employeeCode: "E0046", name: "Rebecasuji", email: "rebeca@ctint.in", password: "admin123", role: "admin", department: "Software" },
-      { employeeCode: "E0001", name: "Samprakash", email: "sp@ctint.in", password: "admin123", role: "admin", department: "Presales" },
-      { employeeCode: "E0002", name: "Leo Celestine", email: "leo@ctint.in", password: "admin123", role: "admin", department: "Software" },
-      { employeeCode: "E0041", name: "Mohanraj C", email: "mohan@ctint.in", password: "admin123", role: "employee", department: "Finance" },
-      { employeeCode: "E0042", name: "Yuvaraj", password: "admin123", role: "employee", department: "Purchase" },
-      { employeeCode: "E0032", name: "Sivaram C", password: "admin123", role: "employee", department: "Operations" },
-      { employeeCode: "E0044", name: "Umar Farooque", password: "admin123", role: "employee", department: "Operations" },
-      { employeeCode: "E0028", name: "Kaalipushpa R", password: "admin123", role: "employee", department: "Presales" },
-      { employeeCode: "E0009", name: "Rajinth", password: "admin123", role: "employee", department: "Operations" },
-      { employeeCode: "E0048", name: "Durga Devi", password: "admin123", role: "employee", department: "Software" },
-      { employeeCode: "E0047", name: "Samyuktha", email: "samyuktha@ctint.in", password: "admin123", role: "employee", department: "HR & Admin" },
-      { employeeCode: "E0049", name: "Pushpa Prithviraj", password: "admin123", role: "hr", department: "HR & Admin" },
-      { employeeCode: "E0050", name: "Zameela Begam", password: "admin123", role: "employee", department: "Finance" },
-      { employeeCode: "E0051", name: "Arunkumar", password: "admin123", role: "employee", department: "Purchase" },
-      { employeeCode: "E0052", name: "Jyothsna Priya", password: "admin123", role: "employee", department: "Software" },
-      { employeeCode: "E0053", name: "S.NAVEEN KUMAR", password: "admin123", role: "employee", department: "IT Support" },
-      {employeeCode:  "E0054", name:"KIRUBA",password:"admin123",role:"employee",department:"Presales"},
-    ];
+    try {
+      console.log("🌱 Seeding default employees...");
+      const defaultEmployees = [
+        { employeeCode: "E0046", name: "Rebecasuji", email: "rebeca@ctint.in", password: "admin123", role: "admin", department: "Software" },
+        { employeeCode: "E0001", name: "Samprakash", email: "sp@ctint.in", password: "admin123", role: "admin", department: "Presales" },
+        { employeeCode: "E0002", name: "Leo Celestine", email: "leo@ctint.in", password: "admin123", role: "admin", department: "Software" },
+        { employeeCode: "E0041", name: "Mohanraj C", email: "mohan@ctint.in", password: "admin123", role: "employee", department: "Finance" },
+        { employeeCode: "E0042", name: "Yuvaraj", password: "admin123", role: "employee", department: "Purchase" },
+        { employeeCode: "E0032", name: "Sivaram C", password: "admin123", role: "employee", department: "Operations" },
+        { employeeCode: "E0044", name: "Umar Farooque", password: "admin123", role: "employee", department: "Operations" },
+        { employeeCode: "E0028", name: "Kaalipushpa R", password: "admin123", role: "employee", department: "Presales" },
+        { employeeCode: "E0009", name: "Rajinth", password: "admin123", role: "employee", department: "Operations" },
+        { employeeCode: "E0048", name: "Durga Devi", password: "admin123", role: "employee", department: "Software" },
+        { employeeCode: "E0047", name: "Samyuktha", email: "samyuktha@ctint.in", password: "admin123", role: "employee", department: "HR & Admin" },
+        { employeeCode: "E0049", name: "Pushpa Prithviraj", password: "admin123", role: "hr", department: "HR & Admin" },
+        { employeeCode: "E0050", name: "Zameela Begam", password: "admin123", role: "employee", department: "Finance" },
+        { employeeCode: "E0051", name: "Arunkumar", password: "admin123", role: "employee", department: "Purchase" },
+        { employeeCode: "E0052", name: "Jyothsna Priya", password: "admin123", role: "employee", department: "Software" },
+        { employeeCode: "E0053", name: "S.NAVEEN KUMAR", password: "admin123", role: "employee", department: "IT Support" },
+        { employeeCode: "E0054", name: "KIRUBA", password: "admin123", role: "employee", department: "Presales" },
+      ];
 
-    const existingEmployees = await this.getEmployees();
-    const existingCodes = new Set(existingEmployees.map(e => e.employeeCode));
+      const existingEmployees = await this.getEmployees();
+      const existingCodes = new Set(existingEmployees.map(e => e.employeeCode));
 
-    for (const emp of defaultEmployees) {
-      if (!existingCodes.has(emp.employeeCode)) {
-        await this.createEmployee(emp);
-        console.log(`Created missing employee: ${emp.employeeCode} (${emp.name})`);
+      for (const emp of defaultEmployees) {
+        if (!existingCodes.has(emp.employeeCode)) {
+          await this.createEmployee(emp);
+          console.log(`Created missing employee: ${emp.employeeCode} (${emp.name})`);
+        }
       }
-    }
 
-    await this.syncAllPasswords();
+      await this.syncAllPasswords();
+      console.log("✅ Default employees seeded/verified successfully.");
+    } catch (error) {
+      console.error("❌ Error seeding default employees:", error);
+    }
   }
 
   async syncAllPasswords(): Promise<void> {

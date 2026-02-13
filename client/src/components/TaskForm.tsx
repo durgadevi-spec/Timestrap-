@@ -36,21 +36,19 @@ interface TaskFormProps {
 }
 
 const TOOLS_LIST = [
-  'Airtable','Android Studio','Angular','App Store Connect','AWS','Azure',
-  'Bitbucket','BrowserStack','Calls/Phone','Canva','ChatGPT','Chrome',
-  'Claude','Confluence','CSS','Docker','Drizzle','Emails','ESLint',
-  'Excel','Express','Figma','Firebase','Firefox','Flutter','Gemini',
-  'Git','GitHub','GitLab','Google','Google Calendar','Google Keep',
-  'Google Play Console','Google Tasks','Grafana','GSAP','Heroku','HTML',
-  'InVision','JavaScript','Jenkins','Jest','Jira','Kubernetes','Loom',
-  'Lucide Icons','Meeting Others','Meeting with Teams','Miro','MongoDB',
-  'MS Office','MS Teams','MySQL','Netlify','Next.js','Node.js','Notes',
-  'Notion','OpenAI','Others','Outlook','PostgreSQL','Postman','PPT',
-  'Prettier','Prisma','React','Redis','Redux','Safari','Sentry',
-  'Shadcn/UI','Slack','Storybook','Supabase','Swift','Tailwind CSS',
-  'TanStack Query','Trello','TypeScript','Vercel','Vite','VS Code',
-  'Vue','Web Browser','Word','Wouter','XCode','Zapier','Zeplin',
-  'Zoho Books','Zoho Cliq','Zoho Expenses'
+  'Airtable','Android Studio','Angular','AWS','Azure',
+  'Antigravity','Amazon','Bitbucket','BrowserStack','Calls/Phone',
+  'Canva','ChatGPT','Chrome','Claude','Copilot','Whatsapp','Confluence','CSS','Docker',
+  'Drizzle','Emails','ESLint','Excel','Express','Figma','Firebase','Firefox',
+  'Flutter','Gemini','Git','GitHub','GitLab','Google','Google Calendar','Google Keep',
+  'Google Maps','Google Play Console','Google Tasks','Grafana','GSAP','Heroku','HTML',
+  'Indeed','InVision','JavaScript','Jenkins','Jest','Jira','Kubernetes','LinkedIn','Loom',
+  'Lucide Icons','Meeting Others','Meeting with Teams','Miro','MongoDB','MS Office','MS Teams',
+  'MySQL','Naukri','Netlify','Next.js','Node.js','Notes','Notion','OpenAI','Others','Outlook',
+  'Porter','PostgreSQL','Postman','PPT','Prettier','Prisma','React','Redis','Redux','Safari','Sentry',
+  'Shadcn/UI','Shine','Slack','Storybook','Supabase','Swift','Tailwind CSS','TanStack Query',
+  'TimeChamp','Trello','TypeScript','Unolo','Vercel','Vite','VS Code','Vue','Web Browser','Word',
+  'WorkIndia','Wouter','XCode','Zapier','Zeplin','Zoho Books','Zoho Cliq','Zoho Expenses'
 ].sort();
 
 /* ✅ NEW – project type (does NOT remove anything) */
@@ -83,6 +81,8 @@ export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [toolSearch, setToolSearch] = useState('');
+  const [postponements, setPostponements] = useState<Array<any>>([]);
+  const [showPostponements, setShowPostponements] = useState(false);
 
   /* ✅ UPDATED – always an array */
   const [projects, setProjects] = useState<Project[]>([]);
@@ -138,6 +138,32 @@ export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps
     }
     fetchProjects();
   }, [user]);
+
+  // Fetch postponements for PMS-backed tasks (if pmsId provided)
+  useEffect(() => {
+    async function fetchPostponements() {
+      try {
+        // @ts-ignore accept extra prop
+        const pmsId = (task as any)?.pmsId;
+        if (!pmsId) {
+          setPostponements([]);
+          return;
+        }
+        const res = await fetch(`/api/tasks/${pmsId}/postponements`);
+        if (!res.ok) {
+          setPostponements([]);
+          return;
+        }
+        const json = await res.json();
+        setPostponements(Array.isArray(json) ? json : []);
+      } catch (err) {
+        console.error('Failed to fetch postponements', err);
+        setPostponements([]);
+      }
+    }
+    fetchPostponements();
+  }, [task]);
+
 
   /* ✅ ADDED – fetch tasks when project changes */
   useEffect(() => {
@@ -258,14 +284,27 @@ export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps
     if (isSubmitting) return;
     if (!validateForm()) return;
     setIsSubmitting(true);
-    onSave(formData);
+    // include original id when saving so drafts are updated
+    const payload: any = { ...formData };
+    if (task?.id) payload.id = task.id;
+    // include pmsId if present
+    // @ts-ignore
+    if ((task as any)?.pmsId) payload.pmsId = (task as any).pmsId;
+    onSave(payload);
   };
 
   return (
     <Card className="bg-slate-800/50 border-blue-500/20">
       <CardHeader className="pb-4">
         <CardTitle className="text-lg text-white flex items-center justify-between gap-2 flex-wrap">
-          <span>{task?.id ? 'Edit Task' : 'Add New Task'}</span>
+          <div className="flex items-center gap-3">
+            <span>{task?.id ? 'Edit Task' : 'Add New Task'}</span>
+            {postponements.length > 0 && (
+              <Badge variant="outline" className="bg-green-600/10 text-green-300">
+                {postponements.length === 1 ? 'Postponed once' : `Postponed ${postponements.length} times`}
+              </Badge>
+            )}
+          </div>
           
           <div className="flex items-center gap-2">
             {isRecording ? (

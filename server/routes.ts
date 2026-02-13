@@ -2,6 +2,13 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
+import { promises as fs } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { pool } from './db';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import {
   insertOrganisationSchema,
   insertEmployeeSchema,
@@ -20,6 +27,22 @@ function broadcast(type: string, data: any) {
       client.send(message);
     }
   });
+}
+
+// Helper function to check if a project deadline has passed
+function isProjectExpired(endDate: string | null): boolean {
+  if (!endDate) return false;
+
+  try {
+    const projectEndDate = new Date(endDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    projectEndDate.setHours(0, 0, 0, 0);
+    return projectEndDate < today;
+  } catch (error) {
+    console.error("Error parsing project end date:", endDate, error);
+    return false;
+  }
 }
 
 export async function registerRoutes(
@@ -470,7 +493,7 @@ export async function registerRoutes(
   app.post("/api/time-entries/submit-daily/:employeeId/:date", async (req, res) => {
     try {
       const { employeeId, date } = req.params;
-      
+
       // Get all time entries for the employee on that date
       const allEntries = await storage.getTimeEntriesByEmployee(employeeId);
       const dailyEntries = allEntries.filter(entry => entry.date === date);
@@ -519,9 +542,9 @@ export async function registerRoutes(
       });
 
       if (!emailResult.success) {
-        return res.status(500).json({ 
+        return res.status(500).json({
           error: "Failed to send daily summary email",
-          details: emailResult.error 
+          details: emailResult.error
         });
       }
 
@@ -714,12 +737,40 @@ export async function registerRoutes(
   });
 
   // ============ PMS INTEGRATION ROUTES ============
+  // Settings storage for timesheet blocking policy
+  const SETTINGS_PATH = path.join(__dirname, '..', 'server-settings.json');
+
+  async function readSettings() {
+    try {
+      const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
+      return JSON.parse(raw || '{}');
+    } catch (e) {
+      return { blockUnassignedProjectTasks: false };
+    }
+  }
+
+  async function writeSettings(s: any) {
+    try {
+      await fs.writeFile(SETTINGS_PATH, JSON.stringify(s, null, 2), 'utf-8');
+      return true;
+    } catch (e) {
+      console.error('Failed to write settings', e);
+      return false;
+    }
+  }
   app.get("/api/projects", async (req, res) => {
     try {
       const { userRole, userEmpCode, userDepartment } = req.query;
       const { getProjects } = await import('./pmsSupabase');
-      const projects = await getProjects(userRole as string, userEmpCode as string, userDepartment as string);
-      res.json(projects);
+      const pmsProjects = await getProjects(userRole as string, userEmpCode as string, userDepartment as string);
+
+      // Add isExpired flag to each project
+      const projectsWithExpiry = pmsProjects.map(p => ({
+        ...p,
+        isExpired: isProjectExpired(p.end_date || null),
+      }));
+
+      res.json(projectsWithExpiry);
     } catch (error) {
       console.error("PMS projects error:", error);
       res.status(500).json({ error: "Failed to fetch PMS projects" });
@@ -738,6 +789,245 @@ export async function registerRoutes(
     }
   });
 
+  // Return pending tasks assigned to employee that are due on given date and not completed
+  app.get('/api/pending-deadline-tasks', async (req, res) => {
+    try {
+      const employeeId = req.query.employeeId as string;
+      const dateStr = req.query.date as string; // yyyy-mm-dd
+      if (!employeeId || !dateStr) return res.status(400).json({ error: 'employeeId and date are required' });
+
+      const employee = await storage.getEmployee(employeeId);
+      if (!employee) return res.status(404).json({ error: 'Employee not found' });
+
+      const userDept = employee.department || '';
+      const { getProjects, getTasks, updateTaskInPMS } = await import('./pmsSupabase');
+      const projects = await getProjects(employee.role, employee.employeeCode, userDept);
+
+      const pending: any[] = [];
+      const target = new Date(dateStr);
+
+      // Normalize date to local yyyy-mm-dd key to avoid timezone shifts
+      const formatDateLocal = (d: Date) => {
+        const dt = new Date(d);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      };
+
+      const targetKey = formatDateLocal(target);
+
+      const settings = await readSettings();
+      const includeProjectTasks = !!settings.blockUnassignedProjectTasks;
+
+      for (const project of projects) {
+        const tasks = await getTasks(project.project_code, userDept);
+        for (const t of tasks) {
+          // determine assignee match
+          const assignedTo = (t.assignee || (t as any).assigned_to || '').toString();
+          const members = Array.isArray((t as any).task_members) ? (t as any).task_members : [];
+          const isAssigned = assignedTo === employee.employeeCode || members.includes(employee.employeeCode) || false;
+
+          const taskDeadline = t.end_date ? new Date(t.end_date) : null;
+          const taskKey = taskDeadline ? formatDateLocal(taskDeadline) : null;
+
+          const notCompleted = !((t as any).is_completed || (t.status && t.status.toLowerCase() === 'completed'));
+
+          // Diagnostic logging: why a task is included/excluded
+          try {
+            const debugInfo: any = {
+              taskId: t.id,
+              taskName: (t as any).task_name || (t as any).name || null,
+              assignedTo: assignedTo || null,
+              members: members || null,
+              taskKey,
+              targetKey,
+              notCompleted,
+              isAssignedMatch: isAssigned || false,
+            };
+            console.log('[PENDING-CHECK] task debug:', JSON.stringify(debugInfo));
+          } catch (e) {
+            // ignore logging errors
+          }
+
+          // Include task as pending if its deadline matches target and it's not completed.
+          // Whether unassigned project tasks are considered blocking is configurable.
+          const shouldInclude = taskKey && taskKey === targetKey && notCompleted && (isAssigned || includeProjectTasks);
+          if (shouldInclude) {
+            pending.push({
+              ...t,
+              projectCode: project.project_code,
+              projectName: project.project_name,
+              projectDeadline: project.end_date || null,
+              // expose whether the task was explicitly assigned to employee
+              isAssignedToEmployee: isAssigned || false,
+            });
+            console.log('[PENDING-CHECK] Included task:', t.id, (t as any).task_name || '');
+          } else {
+            // log exclusion reason lightly
+            if (taskKey && taskKey === targetKey && !notCompleted) {
+              console.log('[PENDING-CHECK] Excluded (already completed):', t.id);
+            } else if (!taskKey) {
+              console.log('[PENDING-CHECK] Excluded (no deadline):', t.id);
+            } else if (taskKey !== targetKey) {
+              console.log('[PENDING-CHECK] Excluded (date mismatch):', t.id, 'taskKey=', taskKey, 'targetKey=', targetKey);
+            } else if (!isAssigned) {
+              console.log('[PENDING-CHECK] Excluded (not assigned to employee):', t.id, 'assignee=', assignedTo, 'members=', members);
+            }
+          }
+        }
+      }
+
+      res.json(pending);
+    } catch (error) {
+      console.error('Pending deadline tasks error:', error);
+      res.status(500).json({ error: 'Failed to compute pending tasks', details: String(error) });
+    }
+  });
+
+  // Postpone a task: record postponement in local DB and update PMS
+  app.post('/api/tasks/:id/postpone', async (req, res) => {
+    try {
+      const taskId = req.params.id;
+      const { previousDueDate, newDueDate, reason, postponedBy } = req.body;
+      if (!newDueDate || !reason) return res.status(400).json({ error: 'newDueDate and reason are required' });
+
+      // Use raw DB via storage
+      // ensure table exists (best-effort)
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS task_postponements (
+            id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+            task_id varchar NOT NULL,
+            previous_due_date text,
+            new_due_date text NOT NULL,
+            reason text NOT NULL,
+            postponed_by varchar,
+            postponed_at timestamp default now(),
+            postpone_count integer default 1
+          )`);
+      } catch (e) {
+        // ignore
+      }
+
+      // determine previous postpone count for this task
+      const countRes = await pool.query(`SELECT COUNT(*)::int as cnt FROM task_postponements WHERE task_id = $1`, [taskId]);
+      const previousCount = countRes.rows && countRes.rows[0] ? parseInt(countRes.rows[0].cnt, 10) : 0;
+      const newCount = previousCount + 1;
+
+      // insert postponement record with incremented count
+      const insertRes = await pool.query(
+        `INSERT INTO task_postponements (task_id, previous_due_date, new_due_date, reason, postponed_by, postpone_count) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [taskId, previousDueDate || null, newDueDate, reason, postponedBy || null, newCount]
+      );
+      const dbRes = insertRes.rows && insertRes.rows[0] ? insertRes.rows[0] : null;
+
+      // update PMS task
+      const { updateTaskInPMS } = await import('./pmsSupabase');
+      const updated = await updateTaskInPMS(taskId, { end_date: newDueDate });
+
+      // Notify HR and Admin
+      try {
+        // Get project details to find organization, but generic HR/Admin notification is acceptable as per request
+        // We'll Notify all admins and HRs
+        // In a real app we might filter by project's organization, but for now we broadcast to role
+        const employees = await storage.getEmployees();
+        const notifyList = employees.filter(e => e.role === 'admin' || e.role === 'hr' || e.department === 'HR & Admin');
+        const recipientEmails = notifyList.map(e => e.email).filter(Boolean) as string[];
+
+        // Also notify the employee who postponed (confirmation)
+        if (postponedBy) {
+          const actor = await storage.getEmployee(postponedBy);
+          if (actor?.email) recipientEmails.push(actor.email);
+        }
+
+        const uniqueRecipients = [...new Set(recipientEmails)];
+
+        if (uniqueRecipients.length > 0) {
+          await apiRequest('POST', '/api/notifications/general', {
+            subject: `Task Deadline Extended: Task ${taskId}`,
+            message: `
+               Task ID: ${taskId}
+               Postponed By: ${postponedBy}
+               Reason: ${reason}
+               New Due Date: ${newDueDate}
+               Previous Due Date: ${previousDueDate || 'N/A'}
+             `,
+            recipients: uniqueRecipients
+          });
+          console.log(`[EMAIL] Postponement notification sent to ${uniqueRecipients.length} recipients`);
+        }
+      } catch (notifyErr) {
+        console.error('[EMAIL] Failed to send postponement notification:', notifyErr);
+      }
+
+      res.json({ success: true, postponement: dbRes, updatedPMS: updated });
+    } catch (error) {
+      console.error('Postpone task error:', error);
+      res.status(500).json({ error: 'Failed to postpone task', details: String(error) });
+    }
+  });
+
+  // Acknowledge task deadline without extending
+  app.post('/api/tasks/:id/acknowledge', async (req, res) => {
+    try {
+      const taskId = req.params.id;
+      const { acknowledgedBy, projectCode } = req.body;
+
+      if (!acknowledgedBy) return res.status(400).json({ error: 'acknowledgedBy is required' });
+
+      // ensure table exists
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS task_deadline_acknowledgements (
+            id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+            task_id varchar NOT NULL,
+            acknowledged_by varchar NOT NULL,
+            acknowledged_at timestamp default now(),
+            project_code text
+          )`);
+      } catch (e) {
+        // ignore
+      }
+
+      const result = await pool.query(
+        `INSERT INTO task_deadline_acknowledgements (task_id, acknowledged_by, project_code) VALUES ($1, $2, $3) RETURNING *`,
+        [taskId, acknowledgedBy, projectCode || null]
+      );
+
+      res.json({ success: true, acknowledgement: result.rows[0] });
+    } catch (error) {
+      console.error('Acknowledge task error:', error);
+      res.status(500).json({ error: 'Failed to acknowledge task', details: String(error) });
+    }
+  });
+
+  // Get postponement history for a task
+  app.get('/api/tasks/:id/postponements', async (req, res) => {
+    try {
+      const taskId = req.params.id;
+      // ensure table exists (best-effort)
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS task_postponements (
+            id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+            task_id varchar NOT NULL,
+            previous_due_date text,
+            new_due_date text NOT NULL,
+            reason text NOT NULL,
+            postponed_by varchar,
+            postponed_at timestamp default now(),
+            postpone_count integer default 1
+          )`);
+      } catch (e) {
+        // ignore
+      }
+
+      const q = await pool.query(`SELECT id, task_id as "taskId", previous_due_date as "previousDueDate", new_due_date as "newDueDate", reason, postponed_by as "postponedBy", postponed_at as "postponedAt", postpone_count as "postponeCount" FROM task_postponements WHERE task_id = $1 ORDER BY postponed_at DESC`, [taskId]);
+      res.json(Array.isArray(q.rows) ? q.rows : []);
+    } catch (error) {
+      console.error('Get postponements error:', error);
+      res.status(500).json({ error: 'Failed to fetch postponements', details: String(error) });
+    }
+  });
+
   app.get("/api/subtasks", async (req, res) => {
     try {
       const { taskId, userDepartment } = req.query;
@@ -747,6 +1037,110 @@ export async function registerRoutes(
     } catch (error) {
       console.error("PMS subtasks error:", error);
       res.status(500).json({ error: "Failed to fetch PMS subtasks" });
+    }
+  });
+
+  // Get available PMS tasks grouped by project for the employee's department
+  app.get("/api/available-tasks", async (req, res) => {
+    try {
+      const employeeId = req.query.employeeId as string;
+
+      console.log("[AVAILABLE-TASKS] Request received for employee:", employeeId);
+
+      if (!employeeId) {
+        return res.status(400).json({ error: "Employee ID is required" });
+      }
+
+      // Get employee info to get department
+      const employee = await storage.getEmployee(employeeId);
+      if (!employee) {
+        console.log("[AVAILABLE-TASKS] Employee not found:", employeeId);
+        return res.status(404).json({ error: "Employee not found" });
+      }
+
+      console.log("[AVAILABLE-TASKS] Employee found:", { id: employee.id, department: employee.department, role: employee.role });
+
+      const userDepartment = employee.department || '';
+
+      // Get projects for this employee's department
+      const { getProjects } = await import('./pmsSupabase');
+      const projects = await getProjects(employee.role, employee.employeeCode, userDepartment);
+      console.log("[AVAILABLE-TASKS] Projects retrieved:", projects.length);
+
+      // Fetch tasks for each project and group them
+      const { getTasks } = await import('./pmsSupabase');
+      const tasksWithProjects: any[] = [];
+
+      // Use local date key to avoid timezone issues when comparing deadlines
+      const formatDateLocal = (d: Date) => {
+        const dt = new Date(d);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      };
+      const todayKey = formatDateLocal(new Date());
+
+      for (const project of projects) {
+        console.log("[AVAILABLE-TASKS] Fetching tasks for project:", project.project_code);
+        const projectTasks = await getTasks(project.project_code, userDepartment);
+        console.log("[AVAILABLE-TASKS] Tasks retrieved:", projectTasks.length);
+
+        tasksWithProjects.push(...projectTasks.map(task => {
+          // Check if project deadline has passed
+          const projectDeadline = project.end_date ? new Date(project.end_date) : null;
+          const projectKey = projectDeadline ? formatDateLocal(projectDeadline) : null;
+          const isProjectOverdue = projectKey ? projectKey < todayKey : false;
+
+          // Check if task deadline has passed
+          const taskDeadline = task.end_date ? new Date(task.end_date) : null;
+          const taskKey = taskDeadline ? formatDateLocal(taskDeadline) : null;
+          const isTaskOverdue = taskKey ? taskKey < todayKey : false;
+
+          return {
+            ...task,
+            projectCode: project.project_code,
+            projectName: project.project_name,
+            projectDescription: project.description,
+            projectDeadline: project.end_date || null,
+            taskDeadline: task.end_date || null,
+            isProjectOverdue: isProjectOverdue || false,
+            isTaskOverdue: isTaskOverdue || false,
+            isOverdue: (isTaskOverdue || isProjectOverdue) ? true : false,
+          };
+        }));
+      }
+
+      console.log("[AVAILABLE-TASKS] Total tasks to return:", tasksWithProjects.length);
+      res.json(tasksWithProjects);
+    } catch (error) {
+      console.error("[AVAILABLE-TASKS] Error:", error);
+      res.status(500).json({ error: "Failed to fetch available tasks", details: String(error) });
+    }
+  });
+
+  // Get timesheet blocking settings
+  app.get('/api/settings/timesheet-blocking', async (req, res) => {
+    try {
+      const settings = await readSettings();
+      res.json({ blockUnassignedProjectTasks: !!settings.blockUnassignedProjectTasks });
+    } catch (error) {
+      console.error('Get settings error:', error);
+      res.status(500).json({ error: 'Failed to get settings' });
+    }
+  });
+
+  // Update timesheet blocking settings
+  app.patch('/api/settings/timesheet-blocking', async (req, res) => {
+    try {
+      const { blockUnassignedProjectTasks } = req.body;
+      const settings = await readSettings();
+      settings.blockUnassignedProjectTasks = !!blockUnassignedProjectTasks;
+      const success = await writeSettings(settings);
+      if (!success) {
+        return res.status(500).json({ error: 'Failed to write settings' });
+      }
+      res.json({ blockUnassignedProjectTasks: !!settings.blockUnassignedProjectTasks });
+    } catch (error) {
+      console.error('Update settings error:', error);
+      res.status(500).json({ error: 'Failed to update settings' });
     }
   });
 

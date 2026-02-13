@@ -38,6 +38,8 @@ const normalizeDepartment = (dept: string): string => {
     'qa': 'qa',
     'quality assurance': 'qa',
     'testing': 'qa',
+    // include singular presale form as well
+    'presale': 'presales',
     'presales': 'presales',
     'pre-sales': 'presales',
     'it support': 'it',
@@ -107,7 +109,7 @@ async function testGetProjects() {
     // Test filtering
     console.log('\n\n🔍 Testing department filtering:\n');
     
-    const testDepts = ['Software Developers', 'software', 'HR', 'Purchase', 'IT Support'];
+    const testDepts = ['Software Developers', 'software', 'HR', 'Purchase', 'IT Support', 'Presales', 'presale'];
     
     testDepts.forEach(userDept => {
       console.log(`Testing user department: "${userDept}"`);

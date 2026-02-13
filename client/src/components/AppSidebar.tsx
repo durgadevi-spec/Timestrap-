@@ -70,7 +70,7 @@ export default function AppSidebar({ userRole, pendingApprovals = 0, collapsed =
       <SidebarContent className="py-2">
         <SidebarGroup>
           <SidebarGroupContent>
-            <SidebarMenu>
+            <SidebarMenu>                
               {visibleItems.map((item) => {
                 const isActive = location === item.url;
                 return (

@@ -5,7 +5,7 @@ import { Card } from '@/components/ui/card';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Plus, Calendar as CalendarIcon, ChevronDown, ChevronUp, Loader2, Send, Download, FileSpreadsheet, CheckCircle, Mail, Clock } from 'lucide-react';
+import { Plus, Calendar as CalendarIcon, ChevronDown, ChevronUp, Loader2, Send, Download, FileSpreadsheet, CheckCircle, Mail, Clock, Zap, AlertCircle, Settings } from 'lucide-react';
 import TaskForm from '@/components/TaskForm';
 import TaskTable, { Task } from '@/components/TaskTable';
 import ShiftSelector from '@/components/ShiftSelector';
@@ -21,9 +21,6 @@ interface TrackerPageProps {
   user: User;
 }
 
-// Helper to get storage key for user's pending tasks
-const getPendingTasksKey = (userId: string, date: string) => `pendingTasks_${userId}_${date}`;
-
 export default function TrackerPage({ user }: TrackerPageProps) {
   const { toast } = useToast();
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -33,10 +30,54 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   const [showAnalytics, setShowAnalytics] = useState(true);
   const [showSubmissionConfirm, setShowSubmissionConfirm] = useState(false);
   const [submittedTasks, setSubmittedTasks] = useState<Task[]>([]);
-  
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [blockUnassignedTasks, setBlockUnassignedTasks] = useState(false);
+
+  // Fetch timesheet blocking settings
+  const { data: blockingSettings } = useQuery({
+    queryKey: ['/api/settings/timesheet-blocking'],
+    queryFn: async () => {
+      try {
+        const response = await fetch('/api/settings/timesheet-blocking');
+        if (!response.ok) throw new Error('Failed to fetch settings');
+        const data = await response.json();
+        setBlockUnassignedTasks(data.blockUnassignedProjectTasks || false);
+        return data;
+      } catch (error) {
+        console.error('Error fetching settings:', error);
+        return { blockUnassignedProjectTasks: false };
+      }
+    },
+  });
+
+  // Update blocking settings mutation
+  const updateSettingsMutation = useMutation({
+    mutationFn: async (blockUnassigned: boolean) => {
+      const response = await fetch('/api/settings/timesheet-blocking', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blockUnassignedProjectTasks: blockUnassigned }),
+      });
+      if (!response.ok) throw new Error('Failed to update settings');
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setBlockUnassignedTasks(data.blockUnassignedProjectTasks);
+      queryClient.invalidateQueries({ queryKey: ['/api/settings/timesheet-blocking'] });
+      toast({
+        title: "Settings Updated",
+        description: `Unassigned project tasks will ${data.blockUnassignedProjectTasks ? 'now' : 'no longer'} block submission.`,
+      });
+    },
+  });
+
   const formattedDate = format(selectedDate, 'yyyy-MM-dd');
+
+  // Helper to get storage key for user's pending tasks
+  const getPendingTasksKey = (userId: string, date: string) => `pendingTasks_${userId}_${date}`;
+
   const storageKey = getPendingTasksKey(user.id, formattedDate);
-  
+
   // Initialize pendingTasks from localStorage
   const [pendingTasks, setPendingTasks] = useState<Task[]>(() => {
     try {
@@ -46,7 +87,7 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       return [];
     }
   });
-  
+
   // Persist pendingTasks to localStorage whenever they change
   const updatePendingTasks = (newTasks: Task[]) => {
     setPendingTasks(newTasks);
@@ -56,7 +97,7 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       localStorage.removeItem(storageKey);
     }
   };
-  
+
   // Load tasks when date changes
   const loadTasksForDate = (date: Date) => {
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -74,6 +115,28 @@ export default function TrackerPage({ user }: TrackerPageProps) {
     queryKey: ['/api/time-entries/employee', user.id],
   });
 
+  // Fetch available PMS tasks for the employee
+  const { data: availableTasks = [], isLoading: isLoadingPMSTasks, error: pmsError } = useQuery<any[]>({
+    queryKey: ['/api/available-tasks', user.id],
+    queryFn: async () => {
+      try {
+        console.log('[DEBUG] Fetching available PMS tasks for employee:', user.id);
+        const response = await fetch(`/api/available-tasks?employeeId=${user.id}`);
+        if (!response.ok) {
+          console.error('[DEBUG] API response not ok:', response.status);
+          return [];
+        }
+        const data = await response.json();
+        console.log('[DEBUG] Available tasks fetched:', data);
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        console.error('[DEBUG] Error fetching available tasks:', error);
+        return [];
+      }
+    },
+    enabled: !!user?.id,
+  });
+
   // Filter entries for selected date
   const todaysEntries = serverEntries.filter(e => e.date === formattedDate);
 
@@ -83,7 +146,7 @@ export default function TrackerPage({ user }: TrackerPageProps) {
     if (task.subTask) {
       desc += ' | ' + task.subTask;
     } else {
-      desc += ' | '; // Ensure separator is present even if subtask is empty
+      desc += ' | ';
     }
     if (task.description) {
       desc += ' | ' + task.description;
@@ -239,8 +302,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       // Check if it's a local task or server task
       if (editingTask.id.toString().startsWith('local-')) {
         // Local task - update in state and localStorage
-        updatePendingTasks(pendingTasks.map(t => 
-          t.id === editingTask.id 
+        updatePendingTasks(pendingTasks.map(t =>
+          t.id === editingTask.id
             ? { ...t, ...taskData, durationMinutes: duration }
             : t
         ));
@@ -305,7 +368,7 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   const handleDeleteTask = async (taskId: string) => {
     // Allow deletion of local tasks OR server tasks that are still pending
     const task = allTasks.find(t => t.id === taskId);
-    
+
     if (taskId.startsWith('local-')) {
       // Local task - remove from state and localStorage
       updatePendingTasks(pendingTasks.filter(t => t.id !== taskId));
@@ -321,21 +384,79 @@ export default function TrackerPage({ user }: TrackerPageProps) {
     }
   };
 
+  const handleQuickAddTask = (pmsTask: any) => {
+    // Create a pre-filled task form with PMS task details
+    const prefill: Task = {
+      id: `local-${Date.now()}`,
+      project: pmsTask.projectName,
+      title: pmsTask.task_name,
+      // keep reference to PMS task id so we can fetch postponement history
+      // @ts-ignore additional property
+      pmsId: pmsTask.id,
+      subTask: '',
+      description: pmsTask.description || '',
+      problemAndIssues: '',
+      quantify: '1',
+      achievements: '',
+      scopeOfImprovements: '',
+      toolsUsed: ['Others'],
+      startTime: '09:00',
+      endTime: '10:00',
+      durationMinutes: 60,
+      percentageComplete: 0,
+      isComplete: false,
+    } as Task;
+
+    // Add the prefilled draft to pendingTasks immediately so the form save will update it
+    updatePendingTasks([...pendingTasks, prefill]);
+    setEditingTask(prefill);
+    setShowTaskForm(true);
+  };
+
+  // (no direct quick-add) use `handleQuickAddTask` to open the form so user can fill remaining fields
+
   const handleCompleteTask = (taskId: string) => {
-    updatePendingTasks(pendingTasks.map(t => 
+    updatePendingTasks(pendingTasks.map(t =>
       t.id === taskId ? { ...t, isComplete: true, percentageComplete: 100 } : t
     ));
   };
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingDeadlineTasks, setPendingDeadlineTasks] = useState<any[]>([]);
+  const [showPendingDialog, setShowPendingDialog] = useState(false);
+
+  // Update type to include 'acknowledge'
+  const [postponeForm, setPostponeForm] = useState<Record<string, { selected: boolean; reason: string; newDate: string; action: 'extend' | 'keep' }>>({});
 
   const handleFinalSubmit = async () => {
     if (isSubmitting) return;
     setIsSubmitting(true);
     try {
+      // Check for pending deadline tasks for this employee on this date
+      try {
+        const res = await fetch(`/api/pending-deadline-tasks?employeeId=${user.id}&date=${formattedDate}`);
+        if (res.ok) {
+          const pending = await res.json();
+          if (Array.isArray(pending) && pending.length > 0) {
+            // require user to postpone or complete them first
+            setPendingDeadlineTasks(pending);
+            // initialize form
+            const formState: any = {};
+            pending.forEach((t: any) => {
+              formState[t.id] = { selected: false, reason: '', newDate: '', action: 'extend' }; // Default to extend
+            });
+            setPostponeForm(formState);
+            setShowPendingDialog(true);
+            setIsSubmitting(false);
+            return; // halt submission until user resolves
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check pending deadline tasks', err);
+      }
       // Store tasks for confirmation display
       const tasksToSubmit = [...pendingTasks];
-      
+
       // Submit all pending tasks to database
       for (const task of pendingTasks) {
         await apiRequest('POST', '/api/time-entries', {
@@ -357,7 +478,7 @@ export default function TrackerPage({ user }: TrackerPageProps) {
           status: 'pending',
         });
       }
-      
+
       // Send email notification to managers
       try {
         await apiRequest('POST', '/api/notifications/timesheet-submitted', {
@@ -371,11 +492,11 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       } catch (emailError) {
         console.log('Email notification skipped');
       }
-      
+
       // Save submitted tasks for display and show confirmation
       setSubmittedTasks(tasksToSubmit);
       setShowSubmissionConfirm(true);
-      
+
       toast({
         title: "Timesheet Submitted",
         description: "Your timesheet has been sent for approval.",
@@ -386,6 +507,59 @@ export default function TrackerPage({ user }: TrackerPageProps) {
         description: "Some tasks failed to submit. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handlePostponeSubmit = async () => {
+    // Validate all selected pending tasks
+    const toProcess = pendingDeadlineTasks.filter(t => postponeForm[t.id]?.selected);
+
+    if (toProcess.length === 0) {
+      toast({ title: 'Validation', description: 'Please select tasks to resolve', variant: 'destructive' });
+      return;
+    }
+
+    for (const t of toProcess) {
+      const f = postponeForm[t.id];
+      if (f.action === 'extend' && (!f.reason || !f.newDate)) {
+        toast({ title: 'Validation', description: 'Please provide reason and new date for extending tasks', variant: 'destructive' });
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    try {
+      // Process each task based on action
+      for (const t of toProcess) {
+        const f = postponeForm[t.id];
+
+        if (f.action === 'extend') {
+          await apiRequest('POST', `/api/tasks/${t.id}/postpone`, {
+            previousDueDate: t.end_date || t.start_date || null,
+            newDueDate: f.newDate,
+            reason: f.reason,
+            postponedBy: user.id,
+          });
+        } else {
+          // Acknowledge logic
+          await apiRequest('POST', `/api/tasks/${t.id}/acknowledge`, {
+            acknowledgedBy: user.id,
+            projectCode: t.projectCode
+          });
+        }
+      }
+
+      // close dialog and continue to submit timesheet automatically
+      setShowPendingDialog(false);
+      toast({ title: 'Resolved', description: 'Deadline tasks resolved. Submitting timesheet...' });
+
+      // Re-run final submit flow
+      await handleFinalSubmit();
+    } catch (err) {
+      console.error(err);
+      toast({ title: 'Error', description: 'Failed to process tasks', variant: 'destructive' });
     } finally {
       setIsSubmitting(false);
     }
@@ -448,7 +622,7 @@ export default function TrackerPage({ user }: TrackerPageProps) {
 
     // Generate filename with date range
     const fileName = `TimeEntries_${user.employeeCode}_${format(new Date(), 'yyyyMMdd')}.xlsx`;
-    
+
     // Download file
     XLSX.writeFile(wb, fileName);
 
@@ -480,19 +654,19 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       const endHour = parseInt(task.endTime.split(':')[0]);
       const startMin = parseInt(task.startTime.split(':')[1]);
       const endMin = parseInt(task.endTime.split(':')[1]);
-      
+
       for (let h = startHour; h <= endHour; h++) {
         let mins = 60;
         if (h === startHour) mins = 60 - startMin;
         if (h === endHour) mins = Math.min(mins, endMin);
         if (h === startHour && h === endHour) mins = endMin - startMin;
-        
+
         const hourLabel = h < 12 ? `${h}AM` : h === 12 ? '12PM' : `${h - 12}PM`;
         hourlyMap.set(hourLabel, (hourlyMap.get(hourLabel) || 0) + Math.max(0, mins));
       }
     }
   });
-  
+
   // Create ordered hourly data
   const hours = ['9AM', '10AM', '11AM', '12PM', '1PM', '2PM', '3PM', '4PM', '5PM', '6PM'];
   const liveHourlyProductivity = hours
@@ -522,31 +696,42 @@ export default function TrackerPage({ user }: TrackerPageProps) {
           </p>
         </div>
 
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button 
-              variant="outline" 
-              className="bg-slate-800 border-blue-500/20 text-white hover:bg-slate-700"
-              data-testid="button-date-picker"
-            >
-              <CalendarIcon className="w-4 h-4 mr-2" />
-              {format(selectedDate, 'EEEE, MMMM d, yyyy')}
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0 bg-slate-800 border-blue-500/20" align="end">
-            <Calendar
-              mode="single"
-              selected={selectedDate}
-              onSelect={(date) => {
-                if (date) {
-                  setSelectedDate(date);
-                  loadTasksForDate(date);
-                }
-              }}
-              className="rounded-md"
-            />
-          </PopoverContent>
-        </Popover>
+        <div className="flex gap-2 items-center">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                className="bg-slate-800 border-blue-500/20 text-white hover:bg-slate-700"
+                data-testid="button-date-picker"
+              >
+                <CalendarIcon className="w-4 h-4 mr-2" />
+                {format(selectedDate, 'EEEE, MMMM d, yyyy')}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0 bg-slate-800 border-blue-500/20" align="end">
+              <Calendar
+                mode="single"
+                selected={selectedDate}
+                onSelect={(date) => {
+                  if (date) {
+                    setSelectedDate(date);
+                    loadTasksForDate(date);
+                  }
+                }}
+                className="rounded-md"
+              />
+            </PopoverContent>
+          </Popover>
+
+          <Button
+            variant="outline"
+            size="icon"
+            className="bg-slate-800 border-blue-500/20 text-blue-300 hover:bg-slate-700"
+            onClick={() => setShowSettingsDialog(true)}
+          >
+            <Settings className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
 
       <ShiftSelector
@@ -609,6 +794,9 @@ export default function TrackerPage({ user }: TrackerPageProps) {
             id: editingTask.id,
             project: editingTask.project,
             title: editingTask.title,
+            // include pmsId if present so TaskForm can show postponements
+            // @ts-ignore
+            pmsId: (editingTask as any).pmsId,
             subTask: editingTask.subTask || '',
             description: editingTask.description,
             problemAndIssues: (editingTask as any).problemAndIssues || '',
@@ -630,17 +818,150 @@ export default function TrackerPage({ user }: TrackerPageProps) {
         />
       )}
 
-      {isLoading ? (
+      {isLoading || isLoadingPMSTasks ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
         </div>
       ) : (
-        <TaskTable
-          tasks={allTasks}
-          onEdit={handleEditTask}
-          onDelete={handleDeleteTask}
-          onComplete={handleCompleteTask}
-        />
+        <>
+          {/* Always show available PMS tasks if any exist */}
+          {availableTasks.length > 0 && (
+            <div className="space-y-3">
+              <Card className="bg-cyan-500/10 border-cyan-500/30 p-3">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-cyan-400 flex-shrink-0" />
+                  <span className="text-cyan-200/70 text-sm">
+                    {availableTasks.length} task{availableTasks.length !== 1 ? 's' : ''} available - Click to add
+                  </span>
+                </div>
+              </Card>
+
+              <Card className="bg-slate-800/50 border-blue-500/20 overflow-hidden">
+                <div className="divide-y divide-slate-700">
+                  {availableTasks.map((task, index) => {
+                    // consider task already added locally
+                    const isAdded = pendingTasks.some(pt => (
+                      (pt.title === task.task_name || pt.title === task.task_name.trim()) && pt.project === task.projectName
+                    ));
+
+                    // Compute overdue locally as a fallback to avoid timezone-related server issues
+                    const formatDateLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                    const todayKey = formatDateLocal(new Date());
+                    const taskDeadline = task.taskDeadline ? new Date(task.taskDeadline) : null;
+                    const projectDeadline = task.projectDeadline ? new Date(task.projectDeadline) : null;
+                    const taskKey = taskDeadline ? formatDateLocal(taskDeadline) : null;
+                    const projectKey = projectDeadline ? formatDateLocal(projectDeadline) : null;
+                    const computedTaskOverdue = taskKey ? (taskKey < todayKey) : false;
+                    const computedProjectOverdue = projectKey ? (projectKey < todayKey) : false;
+                    // prefer server-provided task overdue flag when available, else use computed
+                    const taskOverdue = typeof task.isTaskOverdue === 'boolean' ? task.isTaskOverdue : computedTaskOverdue;
+                    const projectOverdue = typeof task.isProjectOverdue === 'boolean' ? task.isProjectOverdue : computedProjectOverdue;
+                    // deadline to display next to task: prefer task deadline, fallback to project deadline
+                    const deadline = taskDeadline || projectDeadline;
+                    const deadlineText = deadline ? deadline.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : null;
+
+                    return (
+                      <div
+                        key={index}
+                        className={`flex items-center justify-between gap-3 p-3 transition-colors ${taskOverdue
+                          ? 'bg-red-500/5 hover:bg-red-500/10'
+                          : 'hover:bg-slate-700/50'
+                          }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <span className="inline-block px-2 py-0.5 text-xs font-medium bg-blue-600/50 text-blue-100 rounded whitespace-nowrap">
+                              {task.projectName}
+                            </span>
+                            {isAdded && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-green-600/60 text-green-100 rounded">
+                                <CheckCircle className="w-3 h-3" />
+                                Added
+                              </span>
+                            )}
+                            {taskOverdue && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-red-600/70 text-red-100 rounded">
+                                <AlertCircle className="w-3 h-3" />
+                                Deadline Over
+                              </span>
+                            )}
+                            {!taskOverdue && projectOverdue && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-600/40 text-amber-100 rounded">
+                                <AlertCircle className="w-3 h-3" />
+                                Project Deadline Over
+                              </span>
+                            )}
+                            {deadline && !taskOverdue && (
+                              <span className="inline-block px-2 py-0.5 text-xs text-yellow-200/70 bg-yellow-500/10 rounded">
+                                Due: {deadlineText}
+                              </span>
+                            )}
+                            {deadline && taskOverdue && (
+                              <span className="inline-block px-2 py-0.5 text-xs text-red-200 bg-red-500/10 rounded">
+                                Was due: {deadlineText}
+                              </span>
+                            )}
+                          </div>
+                          <p className={`text-sm font-medium truncate ${taskOverdue ? 'text-red-300' : 'text-white'}`}>
+                            {task.task_name}
+                          </p>
+                          {task.description && (
+                            <p className="text-blue-200/60 text-xs truncate">
+                              {task.description}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          onClick={() => {
+                            if (isAdded) {
+                              toast({ title: 'Already added', description: 'This task is already in your pending list.' });
+                              return;
+                            }
+                            handleQuickAddTask(task);
+                          }}
+                          variant="outline"
+                          size="sm"
+                          disabled={isAdded}
+                          className={`$${isAdded ? 'opacity-60 cursor-not-allowed' : taskOverdue
+                            ? 'bg-red-700 hover:bg-red-600 border-red-500/50'
+                            : 'bg-slate-700 hover:bg-slate-600 border-blue-500/30'
+                            } text-white whitespace-nowrap flex-shrink-0`}
+                        >
+                          <Plus className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* If fetching failed and no PMS tasks are available, show an error */}
+          {availableTasks.length === 0 && pmsError && (
+            <Card className="bg-red-500/10 border-red-500/30 p-4">
+              <div className="flex items-start gap-3">
+                <div className="text-red-400">⚠️</div>
+                <div>
+                  <h3 className="font-semibold text-white mb-1">Error Loading Available Tasks</h3>
+                  <p className="text-red-200/70 text-sm">
+                    Unable to fetch available PMS tasks. Please try again or add a task manually.
+                  </p>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* Show the user's task table when there are tasks (server or pending) */}
+          {allTasks.length > 0 && (
+            <TaskTable
+              tasks={allTasks}
+              onEdit={handleEditTask}
+              onDelete={handleDeleteTask}
+              onComplete={handleCompleteTask}
+            />
+          )}
+        </>
       )}
 
       <div className="border-t border-blue-500/20 pt-6">
@@ -709,6 +1030,116 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       </div>
 
       {/* Submission Confirmation Dialog */}
+      <Dialog open={showPendingDialog} onOpenChange={setShowPendingDialog}>
+        <DialogContent className="bg-slate-900 border-blue-500/30 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Pending Tasks Require Action</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <p className="text-sm text-blue-200/70">
+              You have tasks due today that are not completed. Please review each task below.
+              You can choosing to <strong>Extend the Timeline</strong> or <strong>Keep the Due Date</strong> (acknowledge).
+              You must resolve all pending tasks before submitting.
+            </p>
+
+            <div className="space-y-4">
+              {pendingDeadlineTasks.map((t) => {
+                const formState = postponeForm[t.id] || { selected: false, reason: '', newDate: '', action: 'extend' };
+                return (
+                  <div key={t.id} className={`bg-slate-800/40 p-4 rounded border ${formState.selected ? 'border-blue-500/50' : 'border-slate-700'}`}>
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={!!formState.selected}
+                        onChange={(e) => setPostponeForm(prev => ({ ...prev, [t.id]: { ...formState, selected: e.target.checked } }))}
+                      />
+                      <div className="flex-1 space-y-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-white">{t.task_name}</span>
+                            <span className="text-xs text-blue-200/70">({t.projectName})</span>
+                            {!t.isAssignedToEmployee && (
+                              <span className="ml-2 inline-block text-xs text-amber-200 bg-amber-700/10 px-2 py-0.5 rounded">Unassigned</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-yellow-200/70">Due: {t.end_date ? new Date(t.end_date).toLocaleDateString() : 'N/A'}</div>
+                        </div>
+
+                        {formState.selected && (
+                          <div className="bg-slate-900/50 p-3 rounded space-y-3">
+                            <div className="flex items-center gap-4">
+                              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name={`action-${t.id}`}
+                                  checked={formState.action === 'extend'}
+                                  onChange={() => setPostponeForm(prev => ({ ...prev, [t.id]: { ...formState, action: 'extend' } }))}
+                                />
+                                <span className={formState.action === 'extend' ? 'text-white' : 'text-slate-400'}>Extend Timeline</span>
+                              </label>
+                              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name={`action-${t.id}`}
+                                  checked={formState.action === 'keep'}
+                                  onChange={() => setPostponeForm(prev => ({ ...prev, [t.id]: { ...formState, action: 'keep', newDate: '', reason: '' } }))}
+                                />
+                                <span className={formState.action === 'keep' ? 'text-white' : 'text-slate-400'}>Keep Due Date (Acknowledge)</span>
+                              </label>
+                            </div>
+
+                            {formState.action === 'extend' && (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 animate-in fade-in slide-in-from-top-1">
+                                <div className="space-y-1">
+                                  <label className="text-xs text-blue-200/70">New Due Date</label>
+                                  <input
+                                    type="date"
+                                    min={new Date().toISOString().split('T')[0]}
+                                    className="w-full bg-slate-800 border border-slate-700 p-2 rounded text-sm text-white"
+                                    value={formState.newDate}
+                                    onChange={(e) => setPostponeForm(prev => ({ ...prev, [t.id]: { ...formState, newDate: e.target.value } }))}
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-xs text-blue-200/70">Reason</label>
+                                  <input
+                                    type="text"
+                                    placeholder="Why is it delayed?"
+                                    className="w-full bg-slate-800 border border-slate-700 p-2 rounded text-sm text-white"
+                                    value={formState.reason}
+                                    onChange={(e) => setPostponeForm(prev => ({ ...prev, [t.id]: { ...formState, reason: e.target.value } }))}
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            {formState.action === 'keep' && (
+                              <div className="text-xs text-slate-400 italic">
+                                Action will be logged. You can submit your timesheet but the task remains overdue.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-700/50">
+              <Button onClick={handlePostponeSubmit} className="bg-yellow-600 hover:bg-yellow-500">
+                Confirm & Submit
+              </Button>
+              <Button variant="ghost" className="text-slate-400 hover:text-white" onClick={() => setShowPendingDialog(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={showSubmissionConfirm} onOpenChange={setShowSubmissionConfirm}>
         <DialogContent className="bg-slate-900 border-blue-500/30 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -719,19 +1150,19 @@ export default function TrackerPage({ user }: TrackerPageProps) {
               Timesheet Submitted Successfully
             </DialogTitle>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
             <div className="flex items-center gap-2 text-sm text-blue-200/80 bg-blue-500/10 p-3 rounded-md">
               <Mail className="w-4 h-4 text-blue-400" />
               <span>Notification sent to managers for approval</span>
             </div>
-            
+
             <div className="space-y-2">
               <h4 className="font-semibold text-white flex items-center gap-2">
                 <Clock className="w-4 h-4 text-cyan-400" />
                 Submitted Tasks ({submittedTasks.length})
               </h4>
-              
+
               <div className="bg-slate-800/50 rounded-md border border-blue-500/20 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-800">
@@ -763,15 +1194,15 @@ export default function TrackerPage({ user }: TrackerPageProps) {
                 </table>
               </div>
             </div>
-            
+
             <div className="flex items-center gap-2 text-sm text-yellow-200/80 bg-yellow-500/10 p-3 rounded-md">
               <Send className="w-4 h-4 text-yellow-400" />
               <span>Status: <strong>Pending Approval</strong> - Awaiting manager review</span>
             </div>
           </div>
-          
+
           <DialogFooter>
-            <Button 
+            <Button
               onClick={clearPendingTasksAndReload}
               className="bg-gradient-to-r from-blue-600 to-cyan-600 w-full"
               data-testid="button-close-confirmation"
@@ -781,6 +1212,60 @@ export default function TrackerPage({ user }: TrackerPageProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Settings Dialog */}
+      <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
+        <DialogContent className="bg-slate-900 border-blue-500/30 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Timesheet Settings</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="bg-slate-800/40 p-4 rounded border border-slate-700">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-white mb-1">Unassigned Project Tasks</label>
+                  <p className="text-xs text-blue-200/60">Block submission if tasks are due today but not assigned to you</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={blockUnassignedTasks}
+                  onChange={(e) => {
+                    const newValue = e.target.checked;
+                    setBlockUnassignedTasks(newValue);
+                    updateSettingsMutation.mutate(newValue);
+                  }}
+                  className="w-5 h-5 cursor-pointer"
+                  disabled={updateSettingsMutation.isPending}
+                />
+              </div>
+              <div className="mt-3 text-xs text-blue-200/50">
+                Status: <span className={blockUnassignedTasks ? 'text-amber-400 font-semibold' : 'text-green-400 font-semibold'}>
+                  {blockUnassignedTasks ? 'BLOCKING' : 'NOT BLOCKING'}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-800/20 p-3 rounded border border-slate-700/50 text-xs text-blue-200/70">
+              <p><strong>Current Policy:</strong></p>
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>Assigned tasks due today always block submission</li>
+                <li>Unassigned project tasks: <span className={blockUnassignedTasks ? 'text-amber-400' : 'text-green-400'}>{blockUnassignedTasks ? 'WILL BLOCK' : 'will NOT block'}</span></li>
+              </ul>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              onClick={() => setShowSettingsDialog(false)}
+              className="bg-gradient-to-r from-blue-600 to-cyan-600 w-full"
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+

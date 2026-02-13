@@ -85,8 +85,14 @@ app.use((req, res, next) => {
 /* -------------------------------------------------------------------------- */
 (async () => {
   try {
+
     // Register API routes
-    await registerRoutes(httpServer, app);
+    try {
+      await registerRoutes(httpServer, app);
+    } catch (err) {
+      console.error("❌ Failed to register routes (DB might be down):", err);
+      // We continue to let the server start so we can see logs, although API might be broken
+    }
 
     // ========================= NEW PMS ROUTES =========================
     // PMS Projects
@@ -126,9 +132,11 @@ app.use((req, res, next) => {
     // Serve frontend
     if (process.env.NODE_ENV === "production") {
       serveStatic(app);
+      console.log("Static file serving setup complete.");
     } else {
       const { setupVite } = await import("./vite");
       await setupVite(httpServer, app);
+      console.log("Vite setup complete.");
     }
 
     // ✅ WINDOWS + RENDER + REPLIT SAFE

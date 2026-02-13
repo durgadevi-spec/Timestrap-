@@ -132,6 +132,45 @@ export const subtasks = pgTable("subtasks", {
 export type Subtask = typeof subtasks.$inferSelect;
 
 /* -------------------------------------------------------------------------- */
+/*                           Task Postponements                                */
+/* -------------------------------------------------------------------------- */
+export const taskPostponements = pgTable("task_postponements", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  taskId: varchar("task_id").notNull(),
+  previousDueDate: text("previous_due_date"),
+  newDueDate: text("new_due_date").notNull(),
+  reason: text("reason").notNull(),
+  postponedBy: varchar("postponed_by"),
+  postponedAt: timestamp("postponed_at").defaultNow().notNull(),
+  postponeCount: integer("postpone_count").default(1),
+});
+
+export const insertTaskPostponementSchema = createInsertSchema(taskPostponements).omit({
+  id: true,
+  postponedAt: true,
+});
+export type InsertTaskPostponement = z.infer<typeof insertTaskPostponementSchema>;
+export type TaskPostponement = typeof taskPostponements.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                        Task Deadline Acknowledgements                       */
+/* -------------------------------------------------------------------------- */
+export const taskDeadlineAcknowledgements = pgTable("task_deadline_acknowledgements", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  taskId: varchar("task_id").notNull(),
+  acknowledgedBy: varchar("acknowledged_by").notNull(),
+  acknowledgedAt: timestamp("acknowledged_at").defaultNow().notNull(),
+  projectCode: text("project_code"),
+});
+
+export const insertTaskDeadlineAcknowledgementSchema = createInsertSchema(taskDeadlineAcknowledgements).omit({
+  id: true,
+  acknowledgedAt: true,
+});
+export type InsertTaskDeadlineAcknowledgement = z.infer<typeof insertTaskDeadlineAcknowledgementSchema>;
+export type TaskDeadlineAcknowledgement = typeof taskDeadlineAcknowledgements.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
 /*                                Time Entries                                 */
 /* -------------------------------------------------------------------------- */
 export const timeEntries = pgTable("time_entries", {

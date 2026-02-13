@@ -82,10 +82,11 @@ const normalizeDepartment = (dept: string): string => {
     'qa': 'qa',
     'quality assurance': 'qa',
     'testing': 'qa',
+    // presales variants
+    'presale': 'presales',
     'presales': 'presales',
     'pre-sales': 'presales',
-    'it support': 'it',
-    'support': 'it'
+    'pre sales': 'presales',
   };
 
   return departmentMappings[normalized] || normalized;
@@ -305,5 +306,35 @@ export const getSubtasks = async (taskId?: string, userDepartment?: string): Pro
   } catch (error) {
     console.error("💥 Error connecting to PMS:", error);
     return []; // Return empty array on connection issues
+  }
+};
+
+// Update a PMS task (e.g., change end_date) and return updated row
+export const updateTaskInPMS = async (taskId: string, updates: { end_date?: string, status?: string }): Promise<PMSTask | null> => {
+  try {
+    const setParts: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+    if (updates.end_date !== undefined) {
+      setParts.push(`end_date = $${idx++}`);
+      params.push(updates.end_date);
+    }
+    if (updates.status !== undefined) {
+      setParts.push(`status = $${idx++}`);
+      params.push(updates.status);
+    }
+
+    if (setParts.length === 0) return null;
+
+    params.push(taskId);
+    const query = `UPDATE project_tasks SET ${setParts.join(', ')}, updated_at = NOW() WHERE id = $${idx} RETURNING *`;
+    const result: QueryResult = await pmsPool.query(query, params);
+    if (result.rows && result.rows.length > 0) {
+      return result.rows[0] as PMSTask;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error updating task in PMS:', error);
+    return null;
   }
 };
